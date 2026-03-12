@@ -1,4 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { auth, db } from "./firebase";
+import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged
+} from "firebase/auth";
+import {
+  collection, doc, setDoc, deleteDoc,
+  onSnapshot, query, orderBy
+} from "firebase/firestore";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -116,9 +127,86 @@ const COLOR_OPTIONS = ["#FF6B6B","#4ECDC4","#FFE66D","#A8E6CF","#FF8B94","#B4A7D
 
 // ─── Main App ────────────────────────────────────────────────────────────────
 export default function App() {
-  const [records, setRecords] = useState(() => load("v2_records", DEFAULT_RECORDS));
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authMode, setAuthMode] = useState("login"); // login | register
+  const [authForm, setAuthForm] = useState({ email: "", password: "" });
+  const [authError, setAuthError] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+
+  // Listen to auth state
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setAuthLoading(false); });
+    return unsub;
+  }, []);
+
+  const handleAuth = async () => {
+    setAuthError(""); setAuthBusy(true);
+    try {
+      if (authMode === "register") {
+        await createUserWithEmailAndPassword(auth, authForm.email, authForm.password);
+      } else {
+        await signInWithEmailAndPassword(auth, authForm.email, authForm.password);
+      }
+    } catch (e) {
+      const msgs = {
+        "auth/email-already-in-use": "此信箱已被註冊",
+        "auth/invalid-email": "信箱格式不正確",
+        "auth/weak-password": "密碼至少需要 6 個字元",
+        "auth/invalid-credential": "信箱或密碼錯誤",
+        "auth/user-not-found": "找不到此帳號",
+        "auth/wrong-password": "密碼錯誤",
+      };
+      setAuthError(msgs[e.code] || e.message);
+    }
+    setAuthBusy(false);
+  };
+
+  if (authLoading) return (
+    <div style={{ fontFamily: "sans-serif", background: "#0F0F13", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff" }}>
+      <div>載入中...</div>
+    </div>
+  );
+
+  if (!user) return (
+    <div style={{ fontFamily: "'Noto Sans TC', sans-serif", background: "#0F0F13", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&family=DM+Serif+Display&display=swap'); *{box-sizing:border-box;margin:0;padding:0;} input{outline:none;font-family:inherit;}`}</style>
+      <div style={{ width: "100%", maxWidth: 380 }}>
+        <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <div style={{ fontSize: 36 }}>💰</div>
+          <div style={{ fontFamily: "'DM Serif Display'", fontSize: 28, color: "#F0EEE9", marginTop: 8 }}>MoneyFlow</div>
+          <div style={{ fontSize: 12, color: "#555", marginTop: 4 }}>跨裝置財務管理</div>
+        </div>
+        <div style={{ background: "#1A1A22", borderRadius: 20, padding: 28 }}>
+          <div style={{ display: "flex", background: "#111", borderRadius: 12, padding: 3, marginBottom: 24 }}>
+            {[["login","登入"],["register","註冊"]].map(([v,l]) => (
+              <button key={v} onClick={() => { setAuthMode(v); setAuthError(""); }} style={{ flex:1, padding:"9px", borderRadius:10, background: authMode===v ? "#4ECDC4" : "transparent", color: authMode===v ? "#0F0F13" : "#555", fontWeight:700, fontSize:13, border:"none", cursor:"pointer" }}>{l}</button>
+            ))}
+          </div>
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 11, color: "#555", marginBottom: 6 }}>電子信箱</div>
+            <input value={authForm.email} onChange={e => setAuthForm(p => ({...p, email: e.target.value}))} type="email" placeholder="your@email.com" style={{ width:"100%", background:"#222", border:"1.5px solid #2A2A35", borderRadius:12, padding:"11px 14px", fontSize:14, color:"#F0EEE9" }} />
+          </div>
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ fontSize: 11, color: "#555", marginBottom: 6 }}>密碼{authMode==="register" ? "（至少 6 位）" : ""}</div>
+            <input value={authForm.password} onChange={e => setAuthForm(p => ({...p, password: e.target.value}))} type="password" placeholder="••••••" onKeyDown={e => e.key==="Enter" && handleAuth()} style={{ width:"100%", background:"#222", border:"1.5px solid #2A2A35", borderRadius:12, padding:"11px 14px", fontSize:14, color:"#F0EEE9" }} />
+          </div>
+          {authError && <div style={{ background:"#FF6B6B22", color:"#FF6B6B", padding:"10px 14px", borderRadius:10, fontSize:12, marginBottom:16 }}>{authError}</div>}
+          <button onClick={handleAuth} disabled={authBusy} style={{ width:"100%", padding:14, borderRadius:14, background:"linear-gradient(135deg,#4ECDC4,#44A8A0)", color:"#0F0F13", fontWeight:700, fontSize:15, border:"none", cursor:"pointer", opacity: authBusy ? 0.7 : 1 }}>
+            {authBusy ? "處理中..." : authMode==="login" ? "登入" : "建立帳號"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  return <MainApp user={user} />;
+}
+
+function MainApp({ user }) {
+  const [records, setRecords] = useState([]);
   const [categories, setCategories] = useState(() => load("v2_cats", DEFAULT_CATS));
-  const [loans, setLoans] = useState(() => load("v2_loans", DEFAULT_LOANS));
+  const [loans, setLoans] = useState([]);
   const [tab, setTab] = useState("home");
   const [syncing, setSyncing] = useState(false);
   const [synced, setSynced] = useState(false);
@@ -151,9 +239,20 @@ export default function App() {
   const [notifPerm, setNotifPerm] = useState(() => typeof Notification !== "undefined" ? Notification.permission : "unsupported");
   const notifChecked = useRef(false);
 
-  useEffect(() => { save("v2_records", records); }, [records]);
   useEffect(() => { save("v2_cats", categories); }, [categories]);
-  useEffect(() => { save("v2_loans", loans); }, [loans]);
+
+  // ── Firestore realtime sync ──
+  useEffect(() => {
+    if (!user) return;
+    const uid = user.uid;
+    const unsubR = onSnapshot(query(collection(db, "users", uid, "records"), orderBy("date","desc")), snap => {
+      setRecords(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    const unsubL = onSnapshot(collection(db, "users", uid, "loans"), snap => {
+      setLoans(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    return () => { unsubR(); unsubL(); };
+  }, [user]);
 
   // ── Live FX fetch (frankfurter.app, free & no key needed) ──
   const fetchRates = useCallback(async () => {
@@ -211,31 +310,40 @@ export default function App() {
   }, []);
 
   // ── Record actions ──
-  const addRecord = () => {
+  const addRecord = async () => {
     if (!recordForm.amount || isNaN(+recordForm.amount)) return;
     const amt = recordForm.type === "expense" ? -Math.abs(+recordForm.amount) : +Math.abs(+recordForm.amount);
-    setRecords(p => [{ id: uid(), ...recordForm, amount: amt }, ...p]);
+    const id = uid();
+    const rec = { ...recordForm, amount: amt, id };
+    await setDoc(doc(db, "users", user.uid, "records", id), rec);
     setRecordForm(emptyRecord);
     setSubView(null);
     sync();
   };
-  const delRecord = (id) => { setRecords(p => p.filter(r => r.id !== id)); sync(); };
+  const delRecord = async (id) => {
+    await deleteDoc(doc(db, "users", user.uid, "records", id));
+    sync();
+  };
 
   // ── Loan actions ──
-  const saveLoan = () => {
+  const saveLoan = async () => {
     if (!loanForm.name || !loanForm.principal) return;
-    if (loanForm.id) {
-      setLoans(p => p.map(l => l.id === loanForm.id ? { ...loanForm, principal: +loanForm.principal, rate: +loanForm.rate, totalMonths: +loanForm.totalMonths, paidMonths: +loanForm.paidMonths } : l));
-    } else {
-      setLoans(p => [...p, { id: uid(), ...loanForm, principal: +loanForm.principal, rate: +loanForm.rate, totalMonths: +loanForm.totalMonths, paidMonths: +loanForm.paidMonths }]);
-    }
+    const id = loanForm.id || uid();
+    const data = { ...loanForm, id, principal: +loanForm.principal, rate: +loanForm.rate, totalMonths: +loanForm.totalMonths, paidMonths: +loanForm.paidMonths };
+    await setDoc(doc(db, "users", user.uid, "loans", id), data);
     setLoanForm(emptyLoan);
     setSubView(null);
     sync();
   };
-  const delLoan = (id) => { setLoans(p => p.filter(l => l.id !== id)); setSubView(null); };
-  const payMonth = (id) => {
-    setLoans(p => p.map(l => l.id === id ? { ...l, paidMonths: Math.min(l.paidMonths + 1, l.totalMonths) } : l));
+  const delLoan = async (id) => {
+    await deleteDoc(doc(db, "users", user.uid, "loans", id));
+    setSubView(null);
+  };
+  const payMonth = async (id) => {
+    const l = loans.find(x => x.id === id);
+    if (!l) return;
+    const updated = { ...l, paidMonths: Math.min(l.paidMonths + 1, l.totalMonths) };
+    await setDoc(doc(db, "users", user.uid, "loans", id), updated);
     sync();
   };
 
@@ -306,12 +414,15 @@ export default function App() {
           <div style={{ fontSize: 10, color: "#555", letterSpacing: 3, textTransform: "uppercase" }}>MoneyFlow</div>
           <div style={{ fontSize: 17, fontWeight: 700, marginTop: 1 }}>財務管理</div>
         </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <button className="btn" onClick={sync} style={{ background: "#1A1A22", borderRadius: 12, padding: "7px 13px", display: "flex", alignItems: "center", gap: 7, fontSize: 11, color: synced ? "#69DB7C" : "#666" }}>
           {syncing
             ? <span className="spin" style={{ width: 12, height: 12, border: "2px solid #333", borderTop: "2px solid #4ECDC4", borderRadius: "50%" }} />
-            : <span style={{ width: 7, height: 7, borderRadius: "50%", background: synced ? "#69DB7C" : "#333", display: "inline-block" }} />}
-          {syncing ? "同步中" : synced ? "已同步" : "同步"}
+            : <span style={{ width: 7, height: 7, borderRadius: "50%", background: synced ? "#69DB7C" : "#4ECDC4", display: "inline-block" }} />}
+          {syncing ? "同步中" : synced ? "已同步" : "雲端同步"}
         </button>
+        <button className="btn" onClick={() => signOut(auth)} style={{ background: "#1A1A22", borderRadius: 12, padding: "7px 11px", fontSize: 11, color: "#555" }} title="登出">⏻</button>
+        </div>
       </div>
 
       {/* Tabs */}
